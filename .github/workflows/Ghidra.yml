@@ -29,20 +29,20 @@ jobs:
 
       - name: Extract dump.zip
         run: |
-          mkdir -p work_bin ghidra_out ghidra_proj
-          unzip -o dump.zip -d work_bin
-          ls -lh work_bin
+          mkdir -p "$PWD/work_bin" "$PWD/ghidra_out" "$PWD/ghidra_proj"
+          unzip -o dump.zip -d "$PWD/work_bin"
+          ls -lh "$PWD/work_bin"
 
       - name: Download Latest Ghidra
         run: |
           GHIDRA_URL=$(curl -s https://api.github.com/repos/NationalSecurityAgency/ghidra/releases/latest | grep "browser_download_url.*\.zip" | head -n 1 | cut -d '"' -f 4)
           curl -L "$GHIDRA_URL" -o ghidra.zip
-          unzip -q ghidra.zip -d ghidra_install
-          mv ghidra_install/ghidra_* ghidra_install/ghidra
+          unzip -q ghidra.zip -d "$PWD/ghidra_install"
+          mv "$PWD"/ghidra_install/ghidra_* "$PWD/ghidra_install/ghidra"
 
       - name: Create Ghidra Export Script
         run: |
-          cat <<'EOF' > ghidra_export.py
+          cat <<'EOF' > "$PWD/ghidra_export.py"
           import os
           import json
           from ghidra.program.util import DefinedDataIterator
@@ -130,16 +130,16 @@ jobs:
         env:
           MAXMEM: 6G
         run: |
-          BIN_PATH=$(find work_bin -name "${{ github.event.inputs.binary_name }}" | head -n 1)
+          BIN_PATH=$(find "$PWD/work_bin" -name "${{ github.event.inputs.binary_name }}" | head -n 1)
           if [ -z "$BIN_PATH" ]; then
-            BIN_PATH=$(find work_bin -type f -name "*.so" | head -n 1)
+            BIN_PATH=$(find "$PWD/work_bin" -type f -name "*.so" | head -n 1)
           fi
           echo "Analyzing: $BIN_PATH"
-          ./ghidra_install/ghidra/support/analyzeHeadless \
-            ./ghidra_proj AkroProject \
+          "$PWD/ghidra_install/ghidra/support/analyzeHeadless" \
+            "$PWD/ghidra_proj" AkroProject \
             -import "$BIN_PATH" \
             -processor AARCH64:LE:64:v8A \
-            -scriptPath . \
+            -scriptPath "$PWD" \
             -postScript ghidra_export.py \
             -analysisTimeoutPerFile 2400
 
