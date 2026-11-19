@@ -1,0 +1,150 @@
+name: Ghidra Headless Extractor
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_addr:
+        description: 'Base Virtual Address (Hex without 0x)'
+        required: true
+        default: '792743F000'
+      binary_name:
+        description: 'Binary filename inside dump.zip'
+        required: true
+        default: 'dump.so'
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Extract dump.zip
+        run: |
+          mkdir -p work_bin ghidra_out ghidra_proj
+          unzip -o dump.zip -d work_bin
+          ls -lh work_bin
+
+      - name: Download Latest Ghidra
+        run: |
+          GHIDRA_URL=$(curl -s https://api.github.com/repos/NationalSecurityAgency/ghidra/releases/latest | grep "browser_download_url.*\.zip" | head -n 1 | cut -d '"' -f 4)
+          curl -L "$GHIDRA_URL" -o ghidra.zip
+          unzip -q ghidra.zip -d ghidra_install
+          mv ghidra_install/ghidra_* ghidra_install/ghidra
+
+      - name: Create Ghidra Export Script
+        run: |
+          cat <<'EOF' > ghidra_export.py
+          import os
+          import json
+          from ghidra.program.util import DefinedDataIterator
+
+          TARGETS = [
+              "getMenuStateId",
+              "getMenuStateIdAtStackDepth",
+              "setActiveVisualCue",
+              "StartMatch",
+              "popMenuState",
+              "AutoPlay",
+              "totalWinnings",
+              "sharedDirector",
+              "sharedUserInfo",
+              "sharedMainManager",
+              "sharedMenuManager",
+              "GameManager",
+              "powerBarView",
+              "isVIPFeatureActive",
+              "isPayingUser",
+              "convertToGL",
+              "convertToUI",
+              "convertTouchToNodeSpace",
+              "getPocketRadius",
+              "getLength",
+              "getWidth"
+          ]
+
+          out_dir = os.path.abspath("ghidra_out")
+          if not os.path.exists(out_dir):
+              os.makedirs(out_dir)
+
+          fm = currentProgram.getFunctionManager()
+          ref_mgr = currentProgram.getReferenceManager()
+          image_base = currentProgram.getImageBase().getOffset()
+
+          all_funcs = []
+          for f in fm.getFunctions(True):
+              addr = f.getEntryPoint().getOffset()
+              rel = addr - image_base
+              all_funcs.append((rel, addr, f.getName()))
+
+          with open(os.path.join(out_dir, "all_functions.txt"), "w") as fp:
+              for rel, addr, name in all_funcs:
+                  fp.write("0x%08x | 0x%010x | %s\n" % (rel, addr, name))
+
+          target_hits = {}
+          for t in TARGETS:
+              target_hits[t] = {"strings": [], "xref_functions": []}
+
+          for data in DefinedDataIterator.definedStrings(currentProgram):
+              val = str(data.getValue())
+              addr_obj = data.getAddress()
+              str_rel = addr_obj.getOffset() - image_base
+              for t in TARGETS:
+                  if t.lower() in val.lower():
+                      if hex(str_rel) not in target_hits[t]["strings"]:
+                          target_hits[t]["strings"].append(hex(str_rel))
+                      refs = ref_mgr.getReferencesTo(addr_obj)
+                      for r in refs:
+                          from_addr = r.getFromAddress()
+                          fn = fm.getFunctionContaining(from_addr)
+                          if fn is not None:
+                              fn_rel = fn.getEntryPoint().getOffset() - image_base
+                              entry = "%s (0x%x)" % (fn.getName(), fn_rel)
+                              if entry not in target_hits[t]["xref_functions"]:
+                                  target_hits[t]["xref_functions"].append(entry)
+
+          with open(os.path.join(out_dir, "targets_report.json"), "w") as fp:
+              json.dump(target_hits, fp, indent=2)
+
+          with open(os.path.join(out_dir, "targets_summary.txt"), "w") as fp:
+              fp.write("Image Base: 0x%x\n" % image_base)
+              fp.write("Total Functions: %d\n\n" % len(all_funcs))
+              for t in TARGETS:
+                  info = target_hits[t]
+                  fp.write("%-28s | fns=%s | strs=%s\n" % (
+                      t,
+                      ", ".join(info["xref_functions"][:5]),
+                      ", ".join(info["strings"][:3])
+                  ))
+          EOF
+
+      - name: Run Ghidra Headless Analysis
+        env:
+          MAXMEM: 6G
+        run: |
+          BIN_PATH=$(find work_bin -name "${{ github.event.inputs.binary_name }}" | head -n 1)
+          if [ -z "$BIN_PATH" ]; then
+            BIN_PATH=$(find work_bin -type f -name "*.so" | head -n 1)
+          fi
+          echo "Analyzing: $BIN_PATH"
+          ./ghidra_install/ghidra/support/analyzeHeadless \
+            ./ghidra_proj AkroProject \
+            -import "$BIN_PATH" \
+            -processor AARCH64:LE:64:v8A \
+            -scriptPath . \
+            -postScript ghidra_export.py \
+            -analysisTimeoutPerFile 2400
+
+      - name: Upload Extracted Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: ghidra-results
+          path: ghidra_out/
