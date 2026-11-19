@@ -40,8 +40,25 @@ jobs:
           unzip -q ghidra.zip -d "$PWD/ghidra_install"
           mv "$PWD"/ghidra_install/ghidra_* "$PWD/ghidra_install/ghidra"
 
-      - name: Create Ghidra Export Script
+      - name: Create Ghidra Scripts
         run: |
+          cat <<'EOF' > "$PWD/ghidra_pre.py"
+          from ghidra.program.model.listing import Program
+
+          opts = currentProgram.getOptions(Program.ANALYSIS_PROPERTIES)
+          heavy = [
+              "Decompiler Parameter ID",
+              "Decompiler Switch Analysis",
+              "Stack",
+              "Non-Returning Functions - Discovered",
+              "Demangler GNU",
+              "Aggressive Instruction Finder"
+          ]
+          for name in heavy:
+              if opts.contains(name):
+                  opts.setBoolean(name, False)
+          EOF
+
           cat <<'EOF' > "$PWD/ghidra_export.py"
           import os
           import json
@@ -128,7 +145,7 @@ jobs:
 
       - name: Run Ghidra Headless Analysis
         env:
-          MAXMEM: 6G
+          MAXMEM: 12G
         run: |
           BIN_PATH=$(find "$PWD/work_bin" -name "${{ github.event.inputs.binary_name }}" | head -n 1)
           if [ -z "$BIN_PATH" ]; then
@@ -140,6 +157,7 @@ jobs:
             -import "$BIN_PATH" \
             -processor AARCH64:LE:64:v8A \
             -scriptPath "$PWD" \
+            -preScript ghidra_pre.py \
             -postScript ghidra_export.py \
             -analysisTimeoutPerFile 2400
 
