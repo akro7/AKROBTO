@@ -1,62 +1,27 @@
-name: Ghidra Headless Extractor
-
-on:
-  workflow_dispatch:
-    inputs:
-      base_addr:
-        description: 'Base Virtual Address (Hex without 0x)'
-        required: true
-        default: '792743F000'
-      binary_name:
-        description: 'Binary filename inside dump.zip'
-        required: true
-        default: 'dump.so'
-
-jobs:
-  analyze:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup Java 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '21'
-
-      - name: Extract dump.zip
-        run: |
-          mkdir -p "$PWD/work_bin" "$PWD/ghidra_out" "$PWD/ghidra_proj"
-          unzip -o dump.zip -d "$PWD/work_bin"
-          ls -lh "$PWD/work_bin"
-
-      - name: Download Latest Ghidra
-        run: |
-          GHIDRA_URL=$(curl -s https://api.github.com/repos/NationalSecurityAgency/ghidra/releases/latest | grep "browser_download_url.*\.zip" | head -n 1 | cut -d '"' -f 4)
-          curl -L "$GHIDRA_URL" -o ghidra.zip
-          unzip -q ghidra.zip -d "$PWD/ghidra_install"
-          mv "$PWD"/ghidra_install/ghidra_* "$PWD/ghidra_install/ghidra"
-
       - name: Create Ghidra Scripts
         run: |
           cat <<'EOF' > "$PWD/ghidra_pre.py"
           from ghidra.program.model.listing import Program
 
           opts = currentProgram.getOptions(Program.ANALYSIS_PROPERTIES)
-          heavy = [
-              "Decompiler Parameter ID",
-              "Decompiler Switch Analysis",
-              "Stack",
-              "Non-Returning Functions - Discovered",
-              "Demangler GNU",
-              "Aggressive Instruction Finder"
-          ]
-          for name in heavy:
-              if opts.contains(name):
-                  opts.setBoolean(name, False)
+          for name in opts.getOptionNames():
+              low = name.lower()
+              if any(k in low for k in [
+                  "demangler",
+                  "decompiler",
+                  "stack",
+                  "non-returning",
+                  "aggressive",
+                  "dwarf",
+                  "pdb",
+                  "call-fixup",
+                  "variadic",
+                  "shared return"
+              ]):
+                  try:
+                      opts.setBoolean(name, False)
+                  except:
+                      pass
           EOF
 
           cat <<'EOF' > "$PWD/ghidra_export.py"
@@ -145,7 +110,7 @@ jobs:
 
       - name: Run Ghidra Headless Analysis
         env:
-          MAXMEM: 12G
+          MAXMEM: 13G
         run: |
           BIN_PATH=$(find "$PWD/work_bin" -name "${{ github.event.inputs.binary_name }}" | head -n 1)
           if [ -z "$BIN_PATH" ]; then
@@ -156,13 +121,8 @@ jobs:
             "$PWD/ghidra_proj" AkroProject \
             -import "$BIN_PATH" \
             -processor AARCH64:LE:64:v8A \
+            -max-cpu 2 \
             -scriptPath "$PWD" \
             -preScript ghidra_pre.py \
             -postScript ghidra_export.py \
             -analysisTimeoutPerFile 2400
-
-      - name: Upload Extracted Results
-        uses: actions/upload-artifact@v4
-        with:
-          name: ghidra-results
-          path: ghidra_out/
